@@ -1,0 +1,1 @@
+GitHub Actions кладёт сюда model.gguf во время сборки.

@@ -1,0 +1,41 @@
+name: OfflineChat
+options:
+  bundleIdPrefix: dev.offlinechat
+  deploymentTarget:
+    iOS: "15.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ENABLE_BITCODE: "NO"
+targets:
+  OfflineChat:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Resources
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Offline AI
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.offlinechat.app
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)/llama.cpp/include
+          - $(SRCROOT)/llama.cpp/ggml/include
+        LIBRARY_SEARCH_PATHS:
+          - $(SRCROOT)/libs
+        OTHER_LDFLAGS:
+          - -lllama_all
+          - -lc++
