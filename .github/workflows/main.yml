@@ -1,0 +1,97 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Какую модель встроить в приложение"
+        type: choice
+        default: qwen2.5-1.5b
+        options:
+          - qwen2.5-1.5b
+          - qwen2.5-0.5b
+          - none
+
+env:
+  LLAMA_TAG: b5046
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: brew install xcodegen cmake
+
+      - name: Clone llama.cpp
+        run: git clone --depth 1 --branch "$LLAMA_TAG" https://github.com/ggml-org/llama.cpp.git llama.cpp
+
+      - name: Build llama.cpp for iOS 15 (CPU only)
+        run: |
+          cd llama.cpp
+          cmake -B build -G Xcode \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="" \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -DCMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM=ggml \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF \
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_SERVER=OFF \
+            -DLLAMA_CURL=OFF \
+            -DGGML_METAL=OFF -DGGML_ACCELERATE=OFF -DGGML_BLAS=OFF \
+            -DGGML_OPENMP=OFF -DGGML_NATIVE=OFF \
+            -DCMAKE_C_FLAGS="-Wno-shorten-64-to-32 -Wno-unused-command-line-argument" \
+            -DCMAKE_CXX_FLAGS="-Wno-shorten-64-to-32 -Wno-unused-command-line-argument" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_XCODE_ATTRIBUTE_SUPPORTED_PLATFORMS=iphoneos
+          cmake --build build --config Release --target llama -j 4 -- -quiet
+          mkdir -p ../libs
+          LIBS=$(find build -name "*.a" -path "*Release-iphoneos*")
+          echo "$LIBS"
+          test -n "$LIBS" || { echo "Статические библиотеки не найдены"; exit 1; }
+          libtool -static -o ../libs/libllama_all.a $LIBS
+          ls -lh ../libs
+
+      - name: Download model
+        run: |
+          mkdir -p Resources
+          MODEL="${{ inputs.model }}"
+          MODEL="${MODEL:-qwen2.5-1.5b}"
+          case "$MODEL" in
+            qwen2.5-0.5b) URL="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_0.gguf" ;;
+            qwen2.5-1.5b) URL="https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_0.gguf" ;;
+            none) URL="" ;;
+          esac
+          if [ -n "$URL" ]; then
+            curl -L --fail --retry 5 --retry-delay 5 -o Resources/model.gguf "$URL"
+            ls -lh Resources
+          fi
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build app (unsigned)
+        run: |
+          xcodebuild -project OfflineChat.xcodeproj -scheme OfflineChat \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package IPA
+        run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/OfflineChat.app Payload/
+          zip -qry -1 OfflineChat.ipa Payload
+          ls -lh OfflineChat.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OfflineChat-ipa
+          path: OfflineChat.ipa
+          compression-level: 0
