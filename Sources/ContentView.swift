@@ -19,7 +19,7 @@ struct ContentView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 10) {
                             ForEach(vm.messages) { message in
-                                MessageBubble(message: message)
+                                MessageBubble(message: message, reasoning: vm.isReasoning)
                                     .id(message.id)
                             }
                             Color.clear.frame(height: 1).id("bottom")
@@ -85,18 +85,50 @@ struct ContentView: View {
 
 struct MessageBubble: View {
     let message: ChatMessage
+    let reasoning: Bool
 
     var body: some View {
         let isUser = message.role == "user"
         HStack {
             if isUser { Spacer(minLength: 40) }
-            Text(message.text.isEmpty ? "…" : message.text)
-                .textSelection(.enabled)
+            content(isUser: isUser)
                 .padding(10)
                 .background(isUser ? Color.accentColor : Color(.secondarySystemBackground))
                 .foregroundColor(isUser ? .white : .primary)
                 .cornerRadius(14)
             if !isUser { Spacer(minLength: 40) }
+        }
+    }
+
+    @ViewBuilder
+    private func content(isUser: Bool) -> some View {
+        if isUser {
+            Text(message.text).textSelection(.enabled)
+        } else {
+            let p = ThinkParser.parse(message.text, reasoning: reasoning)
+            VStack(alignment: .leading, spacing: 6) {
+                if !p.thinking.isEmpty {
+                    if p.thinkingDone {
+                        DisclosureGroup("💭 Размышления") {
+                            Text(p.thinking)
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                        }
+                    } else {
+                        Text("💭 Думаю…")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                        Text(p.thinking)
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                if !p.answer.isEmpty {
+                    Text(p.answer).textSelection(.enabled)
+                } else if p.thinking.isEmpty {
+                    Text("…")
+                }
+            }
         }
     }
 }
@@ -109,7 +141,14 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             Form {
-                Section(header: Text("Системный промпт")) {
+                Section(header: Text("Скорость"),
+                        footer: Text("Авто = число быстрых ядер процессора (на iPhone обычно 2). Если ответы медленные, попробуй 2 или 3: больше потоков не значит быстрее, медленные ядра только мешают. Применяется со следующего ответа.")) {
+                    Stepper(value: $vm.threads, in: 0...6) {
+                        Text(vm.threads == 0 ? "Потоки: авто" : "Потоки: \(vm.threads)")
+                    }
+                }
+                Section(header: Text("Системный промпт"),
+                        footer: Text("Для модели DeepSeek его лучше оставить пустым.")) {
                     TextEditor(text: $vm.systemPrompt)
                         .frame(minHeight: 120)
                     Button("Сбросить по умолчанию") {
@@ -117,7 +156,7 @@ struct SettingsView: View {
                     }
                 }
                 Section(header: Text("Модель"),
-                        footer: Text("Можно выбрать любой файл .gguf в формате ChatML (например, Qwen2.5 Instruct, Q4_0). Он копируется в приложение и работает без интернета.")) {
+                        footer: Text("Можно выбрать любой файл .gguf (Qwen2.5 Instruct, DeepSeek-R1-Distill и т.п., лучше квантизация Q4_0). Он копируется в приложение и работает без интернета.")) {
                     Button("Импортировать .gguf из «Файлов»") {
                         isPresented = false
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {

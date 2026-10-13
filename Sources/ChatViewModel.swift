@@ -14,9 +14,14 @@ final class ChatViewModel: ObservableObject {
     @Published var input = ""
     @Published var isGenerating = false
     @Published var modelReady = false
+    @Published var isReasoning = false
     @Published var status = "Загрузка модели…"
     @Published var systemPrompt: String {
         didSet { UserDefaults.standard.set(systemPrompt, forKey: "systemPrompt") }
+    }
+    /// 0 = автоматически (число быстрых ядер процессора)
+    @Published var threads: Int {
+        didSet { UserDefaults.standard.set(threads, forKey: "threads") }
     }
 
     private let engine = LlamaEngine.shared
@@ -29,32 +34,39 @@ final class ChatViewModel: ObservableObject {
 
     init() {
         systemPrompt = UserDefaults.standard.string(forKey: "systemPrompt") ?? Self.defaultSystemPrompt
+        threads = UserDefaults.standard.integer(forKey: "threads")
         loadChat()
         loadModelIfAvailable()
     }
 
     // MARK: - Модель
 
-    private func locateModel() -> String? {
-        // Импортированная пользователем модель важнее встроенной.
-        if FileManager.default.fileExists(atPath: userModelURL.path) { return userModelURL.path }
-        return Bundle.main.path(forResource: "model", ofType: "gguf")
-    }
-
     func loadModelIfAvailable() {
-        guard let path = locateModel() else {
+        // Импортированная пользователем модель важнее встроенной.
+        let hasUserModel = FileManager.default.fileExists(atPath: userModelURL.path)
+        let bundled = Bundle.main.path(forResource: "model", ofType: "gguf")
+        let path = hasUserModel ? userModelURL.path : bundled
+
+        guard let modelPath = path else {
             modelReady = false
             status = "Модель не найдена. Откройте настройки и импортируйте файл .gguf."
             return
         }
+        // Сборка с DeepSeek кладёт рядом файл-метку reasoning.txt
+        let marker = Bundle.main.path(forResource: "reasoning", ofType: "txt") != nil
+        let forceReasoning = !hasUserModel && marker
+
         modelReady = false
         status = "Загрузка модели…"
-        engine.loadModel(path: path) { [weak self] result in
+        engine.loadModel(path: modelPath, forceReasoning: forceReasoning) { [weak self] result in
             guard let self = self else { return }
             switch result {
             case .success:
+                self.isReasoning = self.engine.isReasoning
                 self.modelReady = true
-                self.status = "Готово · работает офлайн"
+                self.status = self.isReasoning
+                    ? "Готово · режим рассуждений · офлайн"
+                    : "Готово · работает офлайн"
             case .failure:
                 self.status = "Не удалось загрузить модель (файл повреждён или не подходит)."
             }
@@ -93,20 +105,34 @@ final class ChatViewModel: ObservableObject {
         messages.append(ChatMessage(role: "assistant", text: ""))
         let replyIndex = messages.count - 1
 
-        var turns = [ChatTurn(role: "system", content: systemPrompt)]
+        var turns: [ChatTurn] = []
+        if !systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            turns.append(ChatTurn(role: "system", content: systemPrompt))
+        }
         for m in messages.dropLast() {
-            turns.append(ChatTurn(role: m.role, content: m.text))
+            if m.role == "assistant" {
+                // В историю идёт только ответ, без рассуждений.
+                let answer = ThinkParser.parse(m.text, reasoning: isReasoning).answer
+                if answer.isEmpty { continue }
+                turns.append(ChatTurn(role: "assistant", content: answer))
+            } else {
+                turns.append(ChatTurn(role: "user", content: m.text))
+            }
         }
 
+        let nThreads = threads == 0 ? LlamaEngine.autoThreads() : threads
         isGenerating = true
-        engine.generate(turns: turns, maxNewTokens: 512, onToken: { [weak self] piece in
+        engine.generate(turns: turns, threads: nThreads, onToken: { [weak self] piece in
             guard let self = self, replyIndex < self.messages.count else { return }
             self.messages[replyIndex].text += piece
-        }, onFinish: { [weak self] error in
+        }, onFinish: { [weak self] error, stats in
             guard let self = self else { return }
             self.isGenerating = false
             if error != nil, replyIndex < self.messages.count, self.messages[replyIndex].text.isEmpty {
                 self.messages[replyIndex].text = "⚠️ Не удалось сгенерировать ответ."
+            }
+            if let s = stats, s.tokens > 0 {
+                self.status = String(format: "Готово · %.1f ток/с · офлайн", s.tokensPerSecond)
             }
             self.saveChat()
         })
